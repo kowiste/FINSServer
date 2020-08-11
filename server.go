@@ -6,7 +6,7 @@ import (
 	"net"
 )
 
-// Server Omron FINS server (PLC emulator)
+// Server Omron FINS server
 type Server struct {
 	addr      Address
 	conn      *net.UDPConn
@@ -15,41 +15,52 @@ type Server struct {
 	closed    bool
 }
 
-const DM_AREA_SIZE = 32768
+// Address A full device address
+type Address struct {
+	finsAddress
+	udpAddress *net.UDPAddr
+}
+type finsAddress struct {
+	network byte
+	node    byte
+	unit    byte
+}
 
-func NewPLCSimulator(plcAddr Address) (*Server, error) {
+//NewServer Create new server
+func NewServer(IP string, port int, network byte, node byte, unit byte) (*Server, error) {
+
 	s := new(Server)
-	s.addr = plcAddr
-	s.dmarea = make([]byte, DM_AREA_SIZE)
-	s.bitdmarea = make([]byte, DM_AREA_SIZE)
+	s.addr = createAddress(IP, port, network, node, unit)
+	s.dmarea = make([]byte, DMAreaSize)
+	s.bitdmarea = make([]byte, DMAreaSize)
 
-	conn, err := net.ListenUDP("udp", plcAddr.udpAddress)
+	conn, err := net.ListenUDP("udp", s.addr.udpAddress)
 	if err != nil {
 		return nil, err
 	}
 	s.conn = conn
-
-	go func() {
-		var buf [1024]byte
-		for {
-			rlen, remote, err := conn.ReadFromUDP(buf[:])
-			if rlen > 0 {
-				req := decodeRequest(buf[:rlen])
-				resp := s.handler(req)
-
-				_, err = conn.WriteToUDP(encodeResponse(resp), &net.UDPAddr{IP: remote.IP, Port: remote.Port})
-			}
-			if err != nil {
-				// do not complain when connection is closed by user
-				if !s.closed {
-					log.Fatal("Encountered error in server loop: ", err)
-				}
-				break
-			}
-		}
-	}()
-
 	return s, nil
+}
+
+//Listen Listen the FINS server
+func (s *Server) Listen() {
+	var buf [1024]byte
+	for {
+		rlen, remote, err := s.conn.ReadFromUDP(buf[:])
+		if rlen > 0 {
+			req := decodeRequest(buf[:rlen])
+			resp := s.handler(req)
+
+			_, err = s.conn.WriteToUDP(encodeResponse(resp), &net.UDPAddr{IP: remote.IP, Port: remote.Port})
+		}
+		if err != nil {
+			// do not complain when connection is closed by user
+			if !s.closed {
+				log.Fatal("Encountered error in server loop: ", err)
+			}
+			break
+		}
+	}
 }
 
 // Works with only DM area, 2 byte integers
@@ -64,7 +75,7 @@ func (s *Server) handler(r request) response {
 		switch memAddr.memoryArea {
 		case MemoryAreaDMWord:
 
-			if memAddr.address+ic*2 > DM_AREA_SIZE { // Check address boundary
+			if memAddr.address+ic*2 > DMAreaSize { // Check address boundary
 				endCode = EndCodeAddressRangeExceeded
 				break
 			}
@@ -77,7 +88,7 @@ func (s *Server) handler(r request) response {
 			endCode = EndCodeNormalCompletion
 
 		case MemoryAreaDMBit:
-			if memAddr.address+ic > DM_AREA_SIZE { // Check address boundary
+			if memAddr.address+ic > DMAreaSize { // Check address boundary
 				endCode = EndCodeAddressRangeExceeded
 				break
 			}
@@ -105,4 +116,17 @@ func (s *Server) handler(r request) response {
 func (s *Server) Close() {
 	s.closed = true
 	s.conn.Close()
+}
+func createAddress(ip string, port int, network, node, unit byte) Address {
+	return Address{
+		udpAddress: &net.UDPAddr{
+			IP:   net.ParseIP(ip),
+			Port: port,
+		},
+		finsAddress: finsAddress{
+			network: network,
+			node:    node,
+			unit:    unit,
+		},
+	}
 }
